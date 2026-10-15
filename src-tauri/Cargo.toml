@@ -1,6 +1,6 @@
 [package]
 name = "blinkwell"
-version = "0.1.0"
+version = "0.1.1"
 description = "BlinkWell - a reliable 20-20-20 eye-break reminder for Windows and Linux"
 authors = ["BlinkWell"]
 edition = "2024"
