@@ -61,6 +61,6 @@ jobs:
             - **Linux** - the `.deb` for Debian and Ubuntu, or the `.AppImage` for anything else (`chmod +x`, then run)
 
             BlinkWell stays in the tray. Closing the settings window doesn't stop reminders.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
