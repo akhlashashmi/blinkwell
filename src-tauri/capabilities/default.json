@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the BlinkWell settings and overlay windows",
+  "windows": ["main", "overlay-*"],
+  "permissions": ["core:default"]
+}
