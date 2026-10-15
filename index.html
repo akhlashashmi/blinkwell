@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BlinkWell</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="brand">
+          <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M2.4 12S6 5.6 12 5.6 21.6 12 21.6 12 18 18.4 12 18.4 2.4 12 2.4 12Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linejoin="round"
+            />
+            <circle cx="12" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7" />
+          </svg>
+          <div class="brand-text">
+            <h1>BlinkWell</h1>
+            <p>20-20-20 eye care</p>
+          </div>
+        </div>
+        <span id="save-state" class="save-state"></span>
+      </header>
+
+      <section class="card hero">
+        <div class="hero-status">
+          <span id="status-dot" class="dot" data-state="working"></span>
+          <span id="status-label" class="status-label">Connecting...</span>
+        </div>
+        <p id="hero-count" class="hero-count">--:--</p>
+        <div class="hero-actions">
+          <button id="btn-break-now" class="btn primary" type="button">
+            Take a break now
+          </button>
+        </div>
+        <div class="pause-row">
+          <span class="pause-label">Pause</span>
+          <button id="pause-15" class="chip" type="button">15 min</button>
+          <button id="pause-30" class="chip" type="button">30 min</button>
+          <button id="pause-60" class="chip" type="button">1 hour</button>
+          <button id="pause-inf" class="chip" type="button">Indefinite</button>
+          <button id="resume" class="chip accent" type="button">Resume</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Reminders</h2>
+
+        <div class="row toggle-row">
+          <div class="row-text">
+            <span class="row-title">Reminders active</span>
+            <span class="row-hint">Master switch for all break reminders</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="enabled" />
+            <span class="track" aria-hidden="true"></span>
+          </label>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="work-minutes">Work interval</label>
+            <output id="work-minutes-out" for="work-minutes">20 min</output>
+          </div>
+          <input type="range" id="work-minutes" min="1" max="180" step="1" value="20" />
+          <p class="hint">How long you work between eye breaks. The 20-20-20 rule uses 20 minutes.</p>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="break-seconds">Break length</label>
+            <output id="break-seconds-out" for="break-seconds">20 s</output>
+          </div>
+          <input type="range" id="break-seconds" min="5" max="120" step="5" value="20" />
+          <p class="hint">How long each eye break lasts. 20 seconds is the classic rule.</p>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label id="mode-label">Reminder style</label>
+          </div>
+          <div class="segmented" role="group" aria-labelledby="mode-label">
+            <button type="button" data-mode="overlay" aria-pressed="true">Overlay</button>
+            <button type="button" data-mode="notification" aria-pressed="false">Notification</button>
+            <button type="button" data-mode="both" aria-pressed="false">Both</button>
+          </div>
+          <p id="mode-hint" class="hint" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Behavior</h2>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="snooze-minutes">Snooze length</label>
+            <output id="snooze-minutes-out" for="snooze-minutes">5 min</output>
+          </div>
+          <input type="range" id="snooze-minutes" min="1" max="30" step="1" value="5" />
+        </div>
+
+        <div class="field row">
+          <div class="row-text">
+            <label class="row-title" for="warn-before">Warn before break</label>
+            <span class="row-hint">A soft notification right before the break starts</span>
+          </div>
+          <select id="warn-before">
+            <option value="0">Off</option>
+            <option value="10">10 s before</option>
+            <option value="30">30 s before</option>
+            <option value="60">60 s before</option>
+          </select>
+        </div>
+
+        <div class="row toggle-row">
+          <div class="row-text">
+            <span class="row-title">Sound</span>
+            <span class="row-hint">Play a gentle chime when a break starts and ends</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="sound" />
+            <span class="track" aria-hidden="true"></span>
+          </label>
+        </div>
+
+        <div class="row toggle-row">
+          <div class="row-text">
+            <span class="row-title">Allow skipping breaks</span>
+            <span class="row-hint">Shows a skip button for critical work</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="allow-skip" />
+            <span class="track" aria-hidden="true"></span>
+          </label>
+        </div>
+
+        <div class="row toggle-row">
+          <div class="row-text">
+            <span id="strict-title" class="row-title">Strict skip (hold 3s)</span>
+            <span class="row-hint">Skip requires pressing and holding, so it never happens by accident</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="strict-mode" />
+            <span class="track" aria-hidden="true"></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>System</h2>
+
+        <div class="row toggle-row">
+          <div class="row-text">
+            <span class="row-title">Start at login</span>
+            <span class="row-hint">Launch BlinkWell automatically and stay in the tray</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="autostart" />
+            <span class="track" aria-hidden="true"></span>
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="btn-reset" class="btn ghost" type="button">Reset to defaults</button>
+          <button id="btn-quit" class="btn danger" type="button">Quit BlinkWell</button>
+        </div>
+      </section>
+
+      <footer class="footnote">
+        BlinkWell keeps running in the system tray. Closing this window does not stop reminders.
+      </footer>
+    </main>
+  </body>
+</html>

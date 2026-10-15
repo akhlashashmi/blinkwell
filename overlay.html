@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Eye Break</title>
+        <link rel="stylesheet" href="/src/overlay.css" />
+        <script type="module" src="/src/overlay.ts" defer></script>
+    </head>
+
+    <body>
+        <main class="stage">
+            <button
+                id="skip"
+                class="close"
+                type="button"
+                aria-label="Skip break"
+                title="Skip break"
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                        d="M6 6l12 12M18 6L6 18"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                    />
+                </svg>
+            </button>
+
+            <div
+                class="timer"
+                role="timer"
+                aria-live="off"
+                aria-label="Break countdown"
+            >
+                <span id="count" class="count">20</span>
+                <svg class="check" viewBox="0 0 52 52" aria-hidden="true">
+                    <path
+                        d="M13 27l9 9 17-19"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="3"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    />
+                </svg>
+            </div>
+
+            <button id="snooze" class="snooze" type="button">
+                <span id="snooze-label">Snooze 5 min</span>
+            </button>
+
+            <div class="progress" aria-hidden="true">
+                <div id="progress" class="bar"></div>
+            </div>
+        </main>
+    </body>
+</html>
