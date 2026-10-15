@@ -26,10 +26,10 @@ body:not(.awake) { cursor: none; }
   line-height: 1;
   letter-spacing: -0.05em;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.94);
+  color: rgba(255, 255, 255, 0.28);
 }
 
-.check { display: none; width: clamp(64px, 14vmin, 128px); height: auto; color: rgba(255, 255, 255, 0.94); }
+.check { display: none; width: clamp(64px, 14vmin, 128px); height: auto; color: rgba(255, 255, 255, 0.28); }
 .check path { stroke-dasharray: 44; stroke-dashoffset: 44; }
 body.done .count { display: none; }
 body.done .check { display: block; }
@@ -75,12 +75,6 @@ body.done .close { opacity: 0; pointer-events: none; }
 body.awake:not(.done) .snooze, .snooze:focus-visible { opacity: 1; pointer-events: auto; }
 .snooze:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
 .snooze:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.8); outline-offset: 2px; }
-
-/* Progress hairline */
-.progress { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255, 255, 255, 0.08); }
-.bar { height: 100%; width: 100%; background: rgba(255, 255, 255, 0.55); transform-origin: left center; transform: scaleX(1); }
-.anim-ready .bar { transition: transform 1s linear; }
-body.done .progress { opacity: 0; transition: opacity 0.3s var(--ease); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

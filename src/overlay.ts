@@ -21,7 +21,6 @@ function must<T extends Element>(selector: string): T {
   return found;
 }
 
-const bar = must<HTMLDivElement>("#progress");
 const count = must<HTMLSpanElement>("#count");
 const skip = must<HTMLButtonElement>("#skip");
 const snooze = must<HTMLButtonElement>("#snooze");
@@ -66,7 +65,6 @@ function render() {
 
   const total = Math.max(1, status.totalSecs);
   const remaining = Math.max(0, Math.min(total, status.remainingSecs));
-  bar.style.transform = `scaleX(${remaining / total})`;
   count.textContent = String(remaining);
 
   skip.hidden = !status.allowSkip;
