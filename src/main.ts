@@ -5,8 +5,10 @@ import {
   getSettings,
   getStatus,
   onStatus,
+  openLogsFolder,
   pauseReminders,
   quitApp,
+  reportCrash,
   resumeReminders,
   saveSettings,
   startBreakNow,
@@ -109,6 +111,34 @@ function scheduleSave() {
   }, 400);
 }
 
+function setReportState(message: string, kind: "info" | "error" = "info") {
+  const state = el("report-state");
+  state.textContent = message;
+  state.dataset.kind = kind;
+}
+
+async function reportCrashFlow() {
+  const btn = button("btn-report");
+  btn.disabled = true;
+  setReportState("Opening your email app...");
+  try {
+    setReportState(await reportCrash());
+  } catch (error) {
+    setReportState(String(error), "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function openLogsFolderFlow() {
+  try {
+    await openLogsFolder();
+    setReportState("Logs folder opened.");
+  } catch (error) {
+    setReportState(String(error), "error");
+  }
+}
+
 function renderStatus() {
   const dot = el("status-dot");
   const label = el("status-label");
@@ -197,21 +227,37 @@ function wireEvents() {
     scheduleSave();
   });
   button("btn-quit").addEventListener("click", () => void quitApp());
+  button("btn-report").addEventListener("click", () => void reportCrashFlow());
+  button("btn-logs").addEventListener("click", () => void openLogsFolderFlow());
 }
 
 async function init() {
-  const settings = await getSettings();
-  applySettingsToForm(settings);
+  try {
+    const settings = await getSettings();
+    applySettingsToForm(settings);
+  } catch (error) {
+    console.error(error);
+    el("save-state").textContent = "Could not load settings";
+  }
+
   wireEvents();
   loaded = true;
 
-  status = await getStatus();
-  renderStatus();
-
-  await onStatus((update) => {
-    status = update;
+  try {
+    status = await getStatus();
     renderStatus();
-  });
+  } catch (error) {
+    console.error(error);
+  }
+
+  try {
+    await onStatus((update) => {
+      status = update;
+      renderStatus();
+    });
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 void init().catch((error) => {

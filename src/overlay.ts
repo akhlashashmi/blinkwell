@@ -149,25 +149,39 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function init() {
-  status = await getStatus();
-  render();
-  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add("anim-ready")));
-
-  if (status.phase === "breaking" && status.sound) {
-    playStartChime();
+  // The overlay must keep working even if one IPC call hiccups; the status
+  // stream below re-syncs everything within a second anyway.
+  try {
+    status = await getStatus();
+    render();
+    if (status.phase === "breaking" && status.sound) {
+      playStartChime();
+    }
+  } catch (error) {
+    console.error(error);
   }
 
-  await onStatus((update) => {
-    status = update;
-    render();
-  });
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add("anim-ready")));
 
-  await onBreakEnded((payload) => {
-    if (payload.natural) {
-      markDone();
-      playDoneChime();
-    }
-  });
+  try {
+    await onStatus((update) => {
+      status = update;
+      render();
+    });
+  } catch (error) {
+    console.error(error);
+  }
+
+  try {
+    await onBreakEnded((payload) => {
+      if (payload.natural) {
+        markDone();
+        playDoneChime();
+      }
+    });
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 void init().catch((error) => {

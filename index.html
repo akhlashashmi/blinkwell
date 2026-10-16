@@ -146,6 +146,24 @@
         </div>
       </section>
 
+      <section class="group" aria-labelledby="g-diagnostics">
+        <h2 id="g-diagnostics">Diagnostics</h2>
+
+        <div class="row">
+          <div class="row-text">
+            <span class="row-title">Crash logs</span>
+            <span class="row-hint">Written to disk automatically and kept for the last 24 hours</span>
+          </div>
+        </div>
+
+        <div class="row actions-row">
+          <button id="btn-report" class="btn secondary" type="button">Report a crash</button>
+          <button id="btn-logs" class="btn secondary" type="button">Open logs folder</button>
+        </div>
+
+        <p id="report-state" class="report-state" role="status" aria-live="polite"></p>
+      </section>
+
       <p class="footnote">Closing this window keeps BlinkWell running in the system tray.</p>
     </main>
   </body>

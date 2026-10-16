@@ -65,6 +65,10 @@ export const resumeReminders = () => invoke("resume_reminders");
 
 export const quitApp = () => invoke("quit_app");
 
+export const reportCrash = () => invoke<string>("report_crash");
+
+export const openLogsFolder = () => invoke<string>("open_logs_folder");
+
 export function onStatus(callback: (status: Status) => void): Promise<UnlistenFn> {
   return listen<Status>("status", (event) => callback(event.payload));
 }

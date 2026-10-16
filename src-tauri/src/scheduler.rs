@@ -1,3 +1,4 @@
+use std::panic::AssertUnwindSafe;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -7,8 +8,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 
+use crate::logging;
 use crate::overlay;
 use crate::settings::{BreakMode, Settings};
+use crate::sync::lock;
 
 pub enum Cmd {
     StartBreakNow,
@@ -44,9 +47,7 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn send(&self, cmd: Cmd) {
-        if let Ok(tx) = self.tx.lock() {
-            let _ = tx.send(cmd);
-        }
+        let _ = lock(&self.tx).send(cmd);
     }
 }
 
@@ -119,7 +120,7 @@ fn snapshot(settings: &Settings, phase: &Phase) -> StatusPayload {
 pub fn spawn(app: AppHandle, settings: Arc<Mutex<Settings>>) -> Scheduler {
     let (tx, rx) = mpsc::channel();
     let initial = {
-        let current = settings.lock().unwrap().clone();
+        let current = lock(&settings).clone();
         snapshot(
             &current,
             &Phase::Working {
@@ -132,7 +133,24 @@ pub fn spawn(app: AppHandle, settings: Arc<Mutex<Settings>>) -> Scheduler {
 
     thread::Builder::new()
         .name("blinkwell-scheduler".to_string())
-        .spawn(move || run(app, settings, status_thread, rx))
+        .spawn(move || {
+            log::info!("scheduler thread started");
+            loop {
+                let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    run(&app, &settings, &status_thread, &rx)
+                }));
+                match outcome {
+                    // The command channel disconnected: the app is shutting down.
+                    Ok(()) => break,
+                    // A panic in one tick must not end the reminders (or the
+                    // app). Log it, take a breath, and carry on.
+                    Err(_) => {
+                        log::error!("scheduler panicked; restarting");
+                        thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            }
+        })
         .expect("failed to spawn scheduler thread");
 
     Scheduler {
@@ -142,12 +160,12 @@ pub fn spawn(app: AppHandle, settings: Arc<Mutex<Settings>>) -> Scheduler {
 }
 
 fn run(
-    app: AppHandle,
-    settings: Arc<Mutex<Settings>>,
-    status: Arc<Mutex<StatusPayload>>,
-    rx: Receiver<Cmd>,
+    app: &AppHandle,
+    settings: &Arc<Mutex<Settings>>,
+    status: &Arc<Mutex<StatusPayload>>,
+    rx: &Receiver<Cmd>,
 ) {
-    let initial_settings = settings.lock().unwrap().clone();
+    let initial_settings = lock(settings).clone();
     let mut phase = Phase::Working {
         ends_at: Instant::now() + work_duration(&initial_settings),
     };
@@ -156,13 +174,18 @@ fn run(
     let mut last_tick = Instant::now();
     let mut last_emit: Option<Instant> = None;
     let mut last_tooltip = Instant::now() - Duration::from_secs(60);
+    // Monitor layout the current overlays were built for, and the last time we
+    // (re)asked for them. Keeps the overlays in step with hot-plugged,
+    // unplugged, moved, or rescaled displays.
+    let mut overlay_sig: Option<String> = None;
+    let mut overlay_try_at: Option<Instant> = None;
 
     loop {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(cmd) => handle_cmd(
-                &app,
-                &settings,
-                &status,
+                app,
+                settings,
+                status,
                 &mut phase,
                 &mut warned,
                 &mut pending_overlay_close,
@@ -179,13 +202,17 @@ fn run(
         // A tick gap much larger than expected means the system was
         // suspended or the process was frozen. Never fire a stale break.
         if gap > Duration::from_secs(10) {
+            log::info!(
+                "woke up after a {}-second gap; restarting the current interval",
+                gap.as_secs()
+            );
             warned = false;
             match phase {
                 Phase::Breaking { .. } => {
-                    pending_overlay_close = finish_break(&app, &settings, &mut phase, false);
+                    pending_overlay_close = finish_break(app, settings, &mut phase, false);
                 }
                 Phase::Working { .. } => {
-                    let current = settings.lock().unwrap().clone();
+                    let current = lock(settings).clone();
                     if current.enabled {
                         phase = Phase::Working {
                             ends_at: Instant::now() + work_duration(&current),
@@ -201,20 +228,20 @@ fn run(
 
         match phase {
             Phase::Working { ends_at } => {
-                let current = settings.lock().unwrap().clone();
+                let current = lock(settings).clone();
                 if current.enabled && current.warn_before_seconds > 0 && !warned {
                     let warn_at = ends_at
                         .checked_sub(Duration::from_secs(current.warn_before_seconds as u64))
                         .unwrap_or(ends_at);
                     if now >= warn_at {
-                        send_warning(&app, &current);
+                        send_warning(app, &current);
                         warned = true;
                     }
                 }
                 if now >= ends_at {
                     if current.enabled {
                         warned = false;
-                        begin_break(&app, &settings, &mut phase);
+                        begin_break(app, settings, &mut phase, &mut pending_overlay_close);
                         changed = true;
                     } else {
                         warned = false;
@@ -226,14 +253,14 @@ fn run(
             }
             Phase::Breaking { ends_at } => {
                 if now >= ends_at {
-                    pending_overlay_close = finish_break(&app, &settings, &mut phase, true);
+                    pending_overlay_close = finish_break(app, settings, &mut phase, true);
                     changed = true;
                 }
             }
             Phase::Paused { until } => {
                 if let Some(deadline) = until {
                     if now >= deadline {
-                        let current = settings.lock().unwrap().clone();
+                        let current = lock(settings).clone();
                         warned = false;
                         phase = Phase::Working {
                             ends_at: now + work_duration(&current),
@@ -246,12 +273,46 @@ fn run(
 
         if let Some(deadline) = pending_overlay_close {
             if Instant::now() >= deadline {
-                overlay::close(&app);
+                overlay::close(app);
                 pending_overlay_close = None;
             }
-        } else if !phase.is_breaking() && overlay::any_open(&app) {
+        } else if !phase.is_breaking() && overlay::any_open(app) {
             // Watchdog: never leave a stray overlay on screen.
-            overlay::close(&app);
+            overlay::close(app);
+        }
+
+        if phase.is_breaking() {
+            let sig = overlay::monitor_signature(app);
+            match (&overlay_sig, sig) {
+                // First tick of the break: begin_break has already asked for
+                // the windows; remember the layout they were built for.
+                (None, Some(sig)) => {
+                    overlay_sig = Some(sig);
+                    overlay_try_at = Some(now);
+                }
+                // Displays were plugged, unplugged, moved, or rescaled while
+                // the break is up: rebuild the overlays to match.
+                (Some(previous), Some(sig)) if *previous != sig => {
+                    overlay_sig = Some(sig);
+                    overlay_try_at = Some(now);
+                    log::info!("display layout changed during a break; rebuilding overlays");
+                    overlay::show(app);
+                }
+                _ => {}
+            }
+
+            // If the windows never materialised (a transient WebView2
+            // hiccup), try again every few seconds.
+            if !overlay::any_open(app)
+                && overlay_try_at.map_or(true, |t| now.duration_since(t) >= Duration::from_secs(5))
+            {
+                overlay_try_at = Some(now);
+                log::warn!("overlay windows are missing during a break; rebuilding");
+                overlay::show(app);
+            }
+        } else {
+            overlay_sig = None;
+            overlay_try_at = None;
         }
 
         let now = Instant::now();
@@ -259,15 +320,16 @@ fn run(
             || last_emit.map_or(true, |last| now.duration_since(last) >= Duration::from_secs(1))
         {
             last_emit = Some(now);
-            let current = settings.lock().unwrap().clone();
+            let current = lock(settings).clone();
             let update = snapshot(&current, &phase);
-            *status.lock().unwrap() = update.clone();
+            *lock(status) = update.clone();
             let _ = app.emit("status", update);
         }
 
         if now.duration_since(last_tooltip) >= Duration::from_secs(5) {
             last_tooltip = now;
-            update_tooltip(&app, &status);
+            logging::tick();
+            update_tooltip(app, status);
         }
     }
 }
@@ -286,7 +348,7 @@ fn handle_cmd(
     match cmd {
         Cmd::StartBreakNow => {
             *warned = false;
-            begin_break(app, settings, phase);
+            begin_break(app, settings, phase, pending_overlay_close);
             changed = true;
         }
         Cmd::SkipBreak => {
@@ -299,7 +361,8 @@ fn handle_cmd(
         Cmd::Snooze => {
             if phase.is_breaking() {
                 finish_break(app, settings, phase, false);
-                let current = settings.lock().unwrap().clone();
+                let current = lock(settings).clone();
+                log::info!("break snoozed for {} min", current.snooze_minutes);
                 *phase = Phase::Working {
                     ends_at: Instant::now() + Duration::from_secs(current.snooze_minutes as u64 * 60),
                 };
@@ -309,6 +372,10 @@ fn handle_cmd(
             }
         }
         Cmd::Pause(minutes) => {
+            match minutes {
+                Some(m) => log::info!("reminders paused for {m} min"),
+                None => log::info!("reminders paused until resumed"),
+            }
             if phase.is_breaking() {
                 finish_break(app, settings, phase, false);
             }
@@ -320,7 +387,8 @@ fn handle_cmd(
             changed = true;
         }
         Cmd::Resume => {
-            let current = settings.lock().unwrap().clone();
+            log::info!("reminders resumed");
+            let current = lock(settings).clone();
             *phase = Phase::Working {
                 ends_at: Instant::now() + work_duration(&current),
             };
@@ -328,7 +396,7 @@ fn handle_cmd(
             changed = true;
         }
         Cmd::SettingsChanged => {
-            let current = settings.lock().unwrap().clone();
+            let current = lock(settings).clone();
             match phase {
                 Phase::Working { .. } => {
                     *phase = Phase::Working {
@@ -348,18 +416,33 @@ fn handle_cmd(
     }
 
     if changed {
-        let current = settings.lock().unwrap().clone();
+        let current = lock(settings).clone();
         let update = snapshot(&current, phase);
-        *status.lock().unwrap() = update.clone();
+        *lock(status) = update.clone();
         let _ = app.emit("status", update);
     }
 }
 
-fn begin_break(app: &AppHandle, settings: &Arc<Mutex<Settings>>, phase: &mut Phase) {
-    let current = settings.lock().unwrap().clone();
+fn begin_break(
+    app: &AppHandle,
+    settings: &Arc<Mutex<Settings>>,
+    phase: &mut Phase,
+    pending_overlay_close: &mut Option<Instant>,
+) {
+    let current = lock(settings).clone();
     let now = Instant::now();
     let overlay_mode = matches!(current.mode, BreakMode::Overlay | BreakMode::Both);
     let notify_mode = matches!(current.mode, BreakMode::Notification | BreakMode::Both);
+
+    // A break that starts while the previous overlay is in its final "break
+    // complete" flourish must survive that pending close.
+    *pending_overlay_close = None;
+
+    log::info!(
+        "eye break started ({}s, mode {})",
+        current.break_seconds,
+        current.mode.as_str()
+    );
 
     if notify_mode {
         send_break_notification(app, &current);
@@ -385,11 +468,15 @@ fn finish_break(
     phase: &mut Phase,
     natural: bool,
 ) -> Option<Instant> {
-    let current = settings.lock().unwrap().clone();
+    let current = lock(settings).clone();
     *phase = Phase::Working {
         ends_at: Instant::now() + work_duration(&current),
     };
     let _ = app.emit("break-ended", serde_json::json!({ "natural": natural }));
+    log::info!(
+        "eye break finished ({})",
+        if natural { "completed" } else { "skipped or interrupted" }
+    );
 
     if natural && overlay::any_open(app) {
         // Give the overlays a moment to show the completion state before
@@ -402,7 +489,7 @@ fn finish_break(
 }
 
 fn send_break_notification(app: &AppHandle, settings: &Settings) {
-    let _ = app
+    let result = app
         .notification()
         .builder()
         .title("Time for an eye break")
@@ -411,10 +498,13 @@ fn send_break_notification(app: &AppHandle, settings: &Settings) {
             settings.break_seconds
         ))
         .show();
+    if let Err(err) = result {
+        log::warn!("could not show the break notification: {err}");
+    }
 }
 
 fn send_warning(app: &AppHandle, settings: &Settings) {
-    let _ = app
+    let result = app
         .notification()
         .builder()
         .title("Eye break coming up")
@@ -423,13 +513,16 @@ fn send_warning(app: &AppHandle, settings: &Settings) {
             settings.break_seconds, settings.warn_before_seconds
         ))
         .show();
+    if let Err(err) = result {
+        log::warn!("could not show the break warning: {err}");
+    }
 }
 
 fn update_tooltip(app: &AppHandle, status: &Arc<Mutex<StatusPayload>>) {
     let Some(tray) = app.tray_by_id("main-tray") else {
         return;
     };
-    let snap = status.lock().unwrap();
+    let snap = lock(status);
     let text = match snap.phase.as_str() {
         "breaking" => format!("BlinkWell - eye break: {}s left", snap.remaining_secs),
         "paused" => match snap.paused_for_secs {

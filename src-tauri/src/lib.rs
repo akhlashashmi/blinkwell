@@ -1,11 +1,15 @@
+mod logging;
 mod overlay;
+mod report;
 mod scheduler;
 mod settings;
+mod sync;
 
 use std::sync::{Arc, Mutex};
 
 use scheduler::{Cmd, Scheduler, StatusPayload};
 use settings::Settings;
+use sync::lock;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -27,26 +31,62 @@ fn load_settings(app: &AppHandle) -> (Settings, bool) {
         Ok(store) => match store.get(STORE_KEY) {
             Some(value) => match serde_json::from_value::<Settings>(value) {
                 Ok(settings) => (settings.sanitized(), true),
-                Err(_) => (Settings::default(), true),
+                Err(err) => {
+                    log::warn!("saved settings could not be read ({err}); using defaults");
+                    (Settings::default(), true)
+                }
             },
             None => (Settings::default(), false),
         },
-        Err(_) => (Settings::default(), false),
-    }
-}
-
-fn persist_settings(app: &AppHandle, settings: &Settings) {
-    if let Ok(store) = app.store(STORE_FILE) {
-        if let Ok(value) = serde_json::to_value(settings) {
-            let _ = store.set(STORE_KEY, value);
-            let _ = store.save();
+        Err(err) => {
+            log::warn!("settings store unavailable ({err}); using defaults");
+            (Settings::default(), false)
         }
     }
 }
 
+fn persist_settings(app: &AppHandle, settings: &Settings) {
+    let store = match app.store(STORE_FILE) {
+        Ok(store) => store,
+        Err(err) => {
+            log::warn!("could not open the settings store: {err}");
+            return;
+        }
+    };
+    match serde_json::to_value(settings) {
+        Ok(value) => {
+            store.set(STORE_KEY, value);
+            if let Err(err) = store.save() {
+                log::warn!("could not save settings to disk: {err}");
+            }
+        }
+        Err(err) => log::warn!("could not serialise settings: {err}"),
+    }
+}
+
+/// Route panics into the log file - release builds have no console, and a
+/// crash should always leave a trace. The hook is deliberately tiny and its
+/// failure modes are ignored, so a panic can never recurse into another one.
+fn install_panic_logger() {
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|location| location.to_string())
+            .unwrap_or_else(|| "unknown location".to_string());
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "non-string panic payload".to_string());
+        log::error!(target: "blinkwell::panic", "panicked at {location}: {message}");
+        eprintln!("BlinkWell: panicked at {location}: {message}");
+    }));
+}
+
 #[tauri::command]
 fn get_settings(shared: tauri::State<'_, AppShared>) -> Settings {
-    shared.settings.lock().unwrap().clone()
+    lock(&shared.settings).clone()
 }
 
 #[tauri::command]
@@ -56,7 +96,7 @@ fn save_settings(
     new_settings: Settings,
 ) -> Result<Settings, String> {
     let sanitized = new_settings.sanitized();
-    let previous = shared.settings.lock().unwrap().clone();
+    let previous = lock(&shared.settings).clone();
 
     if sanitized.autostart != previous.autostart {
         let autolaunch = app.autolaunch();
@@ -66,19 +106,20 @@ fn save_settings(
             autolaunch.disable()
         };
         if let Err(err) = result {
+            log::warn!("could not update start-at-login: {err}");
             return Err(format!("could not update autostart: {err}"));
         }
     }
 
     persist_settings(&app, &sanitized);
-    *shared.settings.lock().unwrap() = sanitized.clone();
+    *lock(&shared.settings) = sanitized.clone();
     shared.scheduler.send(Cmd::SettingsChanged);
     Ok(sanitized)
 }
 
 #[tauri::command]
 fn get_status(shared: tauri::State<'_, AppShared>) -> StatusPayload {
-    shared.scheduler.status.lock().unwrap().clone()
+    lock(&shared.scheduler.status).clone()
 }
 
 #[tauri::command]
@@ -108,7 +149,56 @@ fn resume_reminders(shared: tauri::State<'_, AppShared>) {
 
 #[tauri::command]
 fn quit_app(app: AppHandle) {
+    log::info!("quit requested from settings");
     app.exit(0);
+}
+
+#[tauri::command]
+async fn report_crash() -> Result<String, String> {
+    let files = logging::recent_files(4);
+    if files.is_empty() {
+        return Err("No log files have been written yet - nothing to send.".to_string());
+    }
+    let attachments = report::prepare_attachments(&files);
+
+    let subject = format!("BlinkWell v{} crash report", env!("CARGO_PKG_VERSION"));
+    let body = "Hi!\n\nThe BlinkWell log files from the last 24 hours are attached.\n \
+                Please add a short note about what happened right before the crash.\nThanks!";
+    log::info!(
+        "user requested a crash report; attaching {} log file(s)",
+        attachments.len()
+    );
+
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        report::compose_report(&subject, body, &attachments)
+    })
+    .await
+    .map_err(|err| format!("Could not prepare the report: {err}"))?;
+
+    match outcome {
+        Ok(()) => Ok("Your email app should be open with the logs attached - just hit send.".to_string()),
+        Err(err) => {
+            log::warn!("crash report could not open a mail app: {err}");
+            let address = report::REPORT_EMAIL;
+            match report::reveal_logs_folder() {
+                Ok(dir) => Err(format!(
+                    "Could not open a mail app ({err}). BlinkWell opened the logs folder and \
+                     selected the newest log file instead - please attach it to an email to \
+                     {address}.\n{}",
+                    dir.display()
+                )),
+                Err(_) => Err(format!(
+                    "Could not open a mail app ({err}). Please email the newest log file to \
+                     {address}."
+                )),
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn open_logs_folder() -> Result<String, String> {
+    report::reveal_logs_folder().map(|dir| dir.display().to_string())
 }
 
 fn handle_tray_menu(app: &AppHandle, id: &str) {
@@ -121,7 +211,10 @@ fn handle_tray_menu(app: &AppHandle, id: &str) {
         "pause_60" => shared.scheduler.send(Cmd::Pause(Some(60))),
         "pause_inf" => shared.scheduler.send(Cmd::Pause(None)),
         "resume" => shared.scheduler.send(Cmd::Resume),
-        "quit" => app.exit(0),
+        "quit" => {
+            log::info!("quit requested from the tray");
+            app.exit(0);
+        }
         _ => {}
     }
 }
@@ -196,11 +289,27 @@ pub fn run() {
             snooze_break,
             pause_reminders,
             resume_reminders,
-            quit_app
+            quit_app,
+            report_crash,
+            open_logs_folder
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            logging::init(
+                handle
+                    .path()
+                    .app_data_dir()
+                    .ok()
+                    .map(|dir| dir.join("logs")),
+            );
+            install_panic_logger();
+
             let (settings, first_run) = load_settings(&handle);
+            log::info!(
+                "BlinkWell v{} started (pid {}, first run: {first_run})",
+                env!("CARGO_PKG_VERSION"),
+                std::process::id(),
+            );
 
             #[cfg(not(debug_assertions))]
             if settings.autostart {
@@ -213,6 +322,7 @@ pub fn run() {
                 settings,
                 scheduler,
             });
+            log::info!("scheduler is running");
 
             build_tray(&handle)?;
 
