@@ -450,6 +450,14 @@ select:focus-visible {
     color: var(--muted);
     white-space: pre-line;
     min-height: 18px;
+    opacity: 0;
+    transition: opacity 0.35s var(--ease);
+}
+.report-state.visible {
+    opacity: 1;
+}
+.report-state[data-kind="success"] {
+    color: var(--success);
 }
 .report-state[data-kind="error"] {
     color: var(--danger);

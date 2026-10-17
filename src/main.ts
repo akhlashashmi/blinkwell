@@ -111,18 +111,38 @@ function scheduleSave() {
   }, 400);
 }
 
-function setReportState(message: string, kind: "info" | "error" = "info") {
+let reportStateTimer: number | undefined;
+let reportStateToken = 0;
+
+// Show a short status under the Diagnostics buttons and let it fade away on
+// its own, so no message ever becomes permanent clutter.
+function setReportState(
+  message: string,
+  kind: "success" | "info" | "error" = "info",
+  timeoutMs = 9000,
+) {
   const state = el("report-state");
+  const token = ++reportStateToken;
+  window.clearTimeout(reportStateTimer);
   state.textContent = message;
   state.dataset.kind = kind;
+  void state.offsetWidth;
+  state.classList.add("visible");
+  reportStateTimer = window.setTimeout(() => {
+    state.classList.remove("visible");
+    window.setTimeout(() => {
+      if (reportStateToken === token) state.textContent = "";
+    }, 400);
+  }, timeoutMs);
 }
 
 async function reportCrashFlow() {
   const btn = button("btn-report");
   btn.disabled = true;
-  setReportState("Opening your email app...");
+  setReportState("Opening your email app...", "info", 25000);
   try {
-    setReportState(await reportCrash());
+    const outcome = await reportCrash();
+    setReportState(outcome.message, outcome.kind);
   } catch (error) {
     setReportState(String(error), "error");
   } finally {
@@ -133,7 +153,7 @@ async function reportCrashFlow() {
 async function openLogsFolderFlow() {
   try {
     await openLogsFolder();
-    setReportState("Logs folder opened.");
+    setReportState("Logs folder opened.", "success");
   } catch (error) {
     setReportState(String(error), "error");
   }

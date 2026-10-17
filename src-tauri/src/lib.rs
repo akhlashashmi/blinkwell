@@ -153,11 +153,20 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// What the Diagnostics section shows after a report attempt: `success` when
+/// the mail app opened with the attachments, `info` when BlinkWell fell back
+/// to the browser. The message is always written for humans.
+#[derive(serde::Serialize)]
+struct ReportOutcome {
+    kind: &'static str,
+    message: String,
+}
+
 #[tauri::command]
-async fn report_crash() -> Result<String, String> {
+async fn report_crash() -> Result<ReportOutcome, String> {
     let files = logging::recent_files(4);
     if files.is_empty() {
-        return Err("No log files have been written yet - nothing to send.".to_string());
+        return Err("There are no log files to send yet.".to_string());
     }
     let attachments = report::prepare_attachments(&files);
 
@@ -169,36 +178,65 @@ async fn report_crash() -> Result<String, String> {
         attachments.len()
     );
 
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        report::compose_report(&subject, body, &attachments)
-    })
-    .await
-    .map_err(|err| format!("Could not prepare the report: {err}"))?;
+    let attempt = {
+        let subject = subject.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            report::compose_report(&subject, body, &attachments)
+        })
+        .await
+    };
 
-    match outcome {
-        Ok(()) => Ok("Your email app should be open with the logs attached - just hit send.".to_string()),
-        Err(err) => {
-            log::warn!("crash report could not open a mail app: {err}");
-            let address = report::REPORT_EMAIL;
-            match report::reveal_logs_folder() {
-                Ok(dir) => Err(format!(
-                    "Could not open a mail app ({err}). BlinkWell opened the logs folder and \
-                     selected the newest log file instead - please attach it to an email to \
-                     {address}.\n{}",
-                    dir.display()
-                )),
-                Err(_) => Err(format!(
-                    "Could not open a mail app ({err}). Please email the newest log file to \
-                     {address}."
-                )),
-            }
+    let compose_error = match attempt {
+        Ok(Ok(())) => {
+            return Ok(ReportOutcome {
+                kind: "success",
+                message: "Your email app is open with the logs attached - just hit send."
+                    .to_string(),
+            });
         }
+        Ok(Err(err)) => err,
+        Err(err) => format!("the report task failed: {err}"),
+    };
+    log::warn!(
+        "crash report could not open a mail app ({compose_error}); trying the browser fallback"
+    );
+
+    // No mail app (or it would not answer): open a prefilled Gmail draft in
+    // the browser and hand the user the file to attach.
+    let browser = report::open_web_report(&subject, body).is_ok();
+    let folder = report::reveal_logs_folder().is_ok();
+    if !browser {
+        log::warn!("browser fallback could not be opened");
     }
+    let address = report::REPORT_EMAIL;
+    let message = match (browser, folder) {
+        (true, _) => "No email app found, so a Gmail draft is open in your browser. \
+                      Attach the newest log file from your logs folder and send."
+            .to_string(),
+        (false, true) => format!(
+            "No email app found. Your logs folder is open with the newest file selected - \
+             email it to {address}."
+        ),
+        (false, false) => format!(
+            "No email app found. Use Open logs folder to find the logs, then email them to \
+             {address}."
+        ),
+    };
+    Ok(ReportOutcome {
+        kind: "info",
+        message,
+    })
 }
 
 #[tauri::command]
 fn open_logs_folder() -> Result<String, String> {
-    report::reveal_logs_folder().map(|dir| dir.display().to_string())
+    match report::reveal_logs_folder() {
+        Ok(dir) => Ok(dir.display().to_string()),
+        Err(err) => {
+            log::warn!("could not open the logs folder: {err}");
+            Err("Couldn't open the logs folder.".to_string())
+        }
+    }
 }
 
 fn handle_tray_menu(app: &AppHandle, id: &str) {

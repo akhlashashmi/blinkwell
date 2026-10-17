@@ -8,7 +8,8 @@ pub const REPORT_EMAIL: &str = "akhlasahmed.aka+blinkwell@gmail.com";
 
 /// Open the user's mail app with a prefilled message and the log files
 /// attached. Windows goes through Simple MAPI, Linux through xdg-email; the
-/// error is returned for the UI to show when no mail handler exists.
+/// error is technical and meant for the log - the UI shows friendly fallback
+/// guidance instead.
 pub fn compose_report(subject: &str, body: &str, files: &[PathBuf]) -> Result<(), String> {
     if files.is_empty() {
         return Err("there are no log files to send yet".to_string());
@@ -42,6 +43,85 @@ pub fn prepare_attachments(files: &[PathBuf]) -> Vec<PathBuf> {
     } else {
         attachments
     }
+}
+
+/// Fallback path when no mail app exists: open a prefilled Gmail draft in the
+/// browser, so the user only has to attach the log file and hit send.
+pub fn open_web_report(subject: &str, body: &str) -> Result<(), String> {
+    let url = format!(
+        "https://mail.google.com/mail/?view=cm&fs=1&to={}&su={}&body={}",
+        url_encode(REPORT_EMAIL),
+        url_encode(subject),
+        url_encode(body)
+    );
+    platform_open_url(&url)
+}
+
+/// Percent-encode for a URL query. Only unreserved characters survive.
+fn url_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 3);
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{byte:02X}"));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+#[link(name = "shell32")]
+unsafe extern "system" {
+    fn ShellExecuteW(
+        hwnd: *mut core::ffi::c_void,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show: i32,
+    ) -> *mut core::ffi::c_void;
+}
+
+#[cfg(windows)]
+fn platform_open_url(url: &str) -> Result<(), String> {
+    // ShellExecuteW hands the URL to the shell, which opens it in the
+    // default browser - the same path as double-clicking a link.
+    let operation = wide("open");
+    let target = wide(url);
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        )
+    };
+    if result as isize > 32 {
+        Ok(())
+    } else {
+        Err(format!("ShellExecuteW returned {}", result as isize))
+    }
+}
+
+#[cfg(not(windows))]
+fn platform_open_url(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("could not start xdg-open: {err}"))
+}
+
+#[cfg(windows)]
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// Open the logs folder in the file manager (with the newest log file
@@ -166,7 +246,7 @@ mod mapi {
     use std::path::PathBuf;
     use std::ptr;
 
-    use super::REPORT_EMAIL;
+    use super::{wide, REPORT_EMAIL};
 
     const MAPI_LOGON_UI: u32 = 0x0000_0001;
     const MAPI_DIALOG: u32 = 0x0000_0008;
@@ -244,10 +324,6 @@ mod mapi {
             data: *mut core::ffi::c_void,
             data_size: *mut u32,
         ) -> i32;
-    }
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
     /// The registered default mail client, if the system has one. Absence is
