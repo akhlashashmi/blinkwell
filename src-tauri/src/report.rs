@@ -4,7 +4,7 @@ use crate::logging;
 
 /// Crash-report destination. Plus-addressing keeps reports filterable in the
 /// inbox.
-pub const REPORT_EMAIL: &str = "blinkwell+akhlashed.aka@gmail.com";
+pub const REPORT_EMAIL: &str = "akhlasahmed.aka+blinkwell@gmail.com";
 
 /// Open the user's mail app with a prefilled message and the log files
 /// attached. Windows goes through Simple MAPI, Linux through xdg-email; the
