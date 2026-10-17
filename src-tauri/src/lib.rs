@@ -183,6 +183,7 @@ async fn report_crash() -> Result<ReportOutcome, String> {
 
     let attempt = {
         let subject = subject.clone();
+        let attachments = attachments.clone();
         tauri::async_runtime::spawn_blocking(move || {
             report::compose_report(&subject, body, &attachments)
         })
@@ -205,22 +206,43 @@ async fn report_crash() -> Result<ReportOutcome, String> {
     );
 
     // No mail app (or it would not answer): open a prefilled Gmail draft in
-    // the browser and hand the user the file to attach.
+    // the browser and put the logs on the clipboard, so Ctrl+V in the draft
+    // attaches them. The folder is only opened when the clipboard fails.
     let browser = report::open_web_report(&subject, body).is_ok();
-    let folder = report::reveal_logs_folder().is_ok();
+    let clipboard = report::copy_files_to_clipboard(&attachments).is_ok();
+    let folder = if clipboard {
+        false
+    } else {
+        report::reveal_logs_folder().is_ok()
+    };
     if !browser {
         log::warn!("browser fallback could not be opened");
     }
+    if !clipboard {
+        log::warn!("clipboard fallback could not be prepared");
+    }
+    log::info!("report fallback: browser={browser} clipboard={clipboard} folder={folder}");
     let address = report::REPORT_EMAIL;
-    let message = match (browser, folder) {
-        (true, _) => "No email app found, so a Gmail draft is open in your browser. \
-                      Attach the newest log file from your logs folder and send."
+    let message = match (browser, clipboard, folder) {
+        (true, true, _) => "No email app found, so a Gmail draft is open in your browser. \
+                            The logs are on your clipboard - press Ctrl+V in the draft to \
+                            attach them."
             .to_string(),
-        (false, true) => format!(
+        (true, false, true) => "No email app found, so a Gmail draft is open in your browser. \
+                               Attach the newest log file from your logs folder and send."
+            .to_string(),
+        (true, false, false) => "No email app found, so a Gmail draft is open in your browser. \
+                                Use Open logs folder to find the logs and attach them."
+            .to_string(),
+        (false, true, _) => format!(
+            "No email app found. The logs are on your clipboard - paste them into a new \
+             email to {address}."
+        ),
+        (false, false, true) => format!(
             "No email app found. Your logs folder is open with the newest file selected - \
              email it to {address}."
         ),
-        (false, false) => format!(
+        (false, false, false) => format!(
             "No email app found. Use Open logs folder to find the logs, then email them to \
              {address}."
         ),

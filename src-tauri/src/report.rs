@@ -46,7 +46,8 @@ pub fn prepare_attachments(files: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Fallback path when no mail app exists: open a prefilled Gmail draft in the
-/// browser, so the user only has to attach the log file and hit send.
+/// browser. The logs reach the draft through the clipboard (see
+/// `copy_files_to_clipboard`), so the user only has to paste and send.
 pub fn open_web_report(subject: &str, body: &str) -> Result<(), String> {
     let url = format!(
         "https://mail.google.com/mail/?view=cm&fs=1&to={}&su={}&body={}",
@@ -55,6 +56,15 @@ pub fn open_web_report(subject: &str, body: &str) -> Result<(), String> {
         url_encode(body)
     );
     platform_open_url(&url)
+}
+
+/// Put the log files on the clipboard as a file list, exactly what Explorer's
+/// Copy produces, so Ctrl+V in a browser mail draft attaches them.
+pub fn copy_files_to_clipboard(files: &[PathBuf]) -> Result<(), String> {
+    if files.is_empty() {
+        return Err("there are no files to copy".to_string());
+    }
+    platform_clipboard_files(files)
 }
 
 /// Percent-encode for a URL query. Only unreserved characters survive.
@@ -85,6 +95,24 @@ unsafe extern "system" {
         directory: *const u16,
         show: i32,
     ) -> *mut core::ffi::c_void;
+}
+
+#[cfg(windows)]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn OpenClipboard(owner: *mut core::ffi::c_void) -> i32;
+    fn EmptyClipboard() -> i32;
+    fn SetClipboardData(format: u32, data: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    fn CloseClipboard() -> i32;
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GlobalAlloc(flags: u32, bytes: usize) -> *mut core::ffi::c_void;
+    fn GlobalLock(block: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    fn GlobalUnlock(block: *mut core::ffi::c_void) -> i32;
+    fn GlobalFree(block: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
 }
 
 #[cfg(windows)]
@@ -122,6 +150,85 @@ fn platform_open_url(url: &str) -> Result<(), String> {
 #[cfg(windows)]
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Put the log files on the clipboard as CF_HDROP, the same format Explorer
+/// uses for Copy. Browsers expose it to paste handlers, so Ctrl+V in a Gmail
+/// draft attaches the files.
+#[cfg(windows)]
+fn platform_clipboard_files(files: &[PathBuf]) -> Result<(), String> {
+    const CF_HDROP: u32 = 15;
+    const GMEM_MOVEABLE: u32 = 0x0002;
+    // DROPFILES from shellapi.h is 20 bytes: the offset where the path list
+    // starts, the mouse position, a non-client flag and a unicode flag.
+    const HEADER: usize = 20;
+
+    let mut list: Vec<u16> = Vec::new();
+    for file in files {
+        list.extend(file.to_string_lossy().encode_utf16());
+        list.push(0);
+    }
+    // One terminator per path, plus the final one for the whole list.
+    list.push(0);
+    let list_bytes = list.len() * std::mem::size_of::<u16>();
+    let total = HEADER + list_bytes;
+
+    let mut header = [0u8; HEADER];
+    header[0..4].copy_from_slice(&(HEADER as u32).to_le_bytes()); // pFiles
+    header[16..20].copy_from_slice(&1i32.to_le_bytes()); // fWide = TRUE
+
+    // Another app can hold the clipboard briefly; give it a few tries.
+    let mut opened = false;
+    for _ in 0..10 {
+        if unsafe { OpenClipboard(std::ptr::null_mut()) } != 0 {
+            opened = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !opened {
+        return Err("the clipboard is busy".to_string());
+    }
+
+    let result = unsafe {
+        let block = GlobalAlloc(GMEM_MOVEABLE, total);
+        if block.is_null() {
+            Err("clipboard memory could not be allocated".to_string())
+        } else {
+            let locked = GlobalLock(block);
+            if locked.is_null() {
+                GlobalFree(block);
+                Err("clipboard memory could not be locked".to_string())
+            } else {
+                std::ptr::copy_nonoverlapping(header.as_ptr(), locked.cast::<u8>(), HEADER);
+                std::ptr::copy_nonoverlapping(
+                    list.as_ptr().cast::<u8>(),
+                    locked.cast::<u8>().add(HEADER),
+                    list_bytes,
+                );
+                GlobalUnlock(block);
+
+                if EmptyClipboard() == 0 {
+                    GlobalFree(block);
+                    Err("the clipboard could not be cleared".to_string())
+                } else if SetClipboardData(CF_HDROP, block).is_null() {
+                    GlobalFree(block);
+                    Err("the clipboard did not accept the files".to_string())
+                } else {
+                    // On success the system owns the block; freeing it here
+                    // would corrupt the clipboard.
+                    Ok(())
+                }
+            }
+        }
+    };
+    unsafe { CloseClipboard() };
+    result
+}
+
+#[cfg(not(windows))]
+fn platform_clipboard_files(_files: &[PathBuf]) -> Result<(), String> {
+    Err("clipboard file copy is not implemented on this platform".to_string())
 }
 
 /// Open the logs folder in the file manager (with the newest log file
