@@ -26,21 +26,24 @@ pub struct AppShared {
     pub scheduler: Scheduler,
 }
 
+/// Returns the saved settings and whether this looks like a first run (no
+/// usable settings on disk). The flag keeps a `--hidden` autostart launch in
+/// the tray, while a manual launch always shows the window.
 fn load_settings(app: &AppHandle) -> (Settings, bool) {
     match app.store(STORE_FILE) {
         Ok(store) => match store.get(STORE_KEY) {
             Some(value) => match serde_json::from_value::<Settings>(value) {
-                Ok(settings) => (settings.sanitized(), true),
+                Ok(settings) => (settings.sanitized(), false),
                 Err(err) => {
                     log::warn!("saved settings could not be read ({err}); using defaults");
                     (Settings::default(), true)
                 }
             },
-            None => (Settings::default(), false),
+            None => (Settings::default(), true),
         },
         Err(err) => {
             log::warn!("settings store unavailable ({err}); using defaults");
-            (Settings::default(), false)
+            (Settings::default(), true)
         }
     }
 }
